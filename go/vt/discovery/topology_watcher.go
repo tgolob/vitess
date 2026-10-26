@@ -240,8 +240,8 @@ func (tw *TopologyWatcher) storeTabletInfos(tabletInfos []*topo.TabletInfo, part
 			continue
 		}
 
-		// Trust the alias from topo and add it if it doesn't exist.
-		if val, ok := tw.tablets[alias]; ok {
+		// The cache also contains excluded tablets that have not been added to the healthcheck.
+		if val, ok := tw.tablets[alias]; ok && (tw.tabletFilter == nil || tw.tabletFilter.IsIncluded(val.tablet)) {
 			// check if the host and port have changed. If yes, replace tablet.
 			oldKey := TabletToMapKey(val.tablet)
 			newKey := TabletToMapKey(newVal.tablet)
@@ -252,7 +252,7 @@ func (tw *TopologyWatcher) storeTabletInfos(tabletInfos []*topo.TabletInfo, part
 				topologyWatcherOperations.Add(topologyWatcherOpReplaceTablet, 1)
 			}
 		} else {
-			// This is a new tablet record, let's add it to the HealthCheck.
+			// Add tablets that are new or were previously excluded.
 			tw.healthcheck.AddTablet(newVal.tablet)
 			topologyWatcherOperations.Add(topologyWatcherOpAddTablet, 1)
 		}
@@ -263,7 +263,7 @@ func (tw *TopologyWatcher) storeTabletInfos(tabletInfos []*topo.TabletInfo, part
 			continue
 		}
 
-		if _, ok := newTablets[val.alias]; !ok {
+		if next, ok := newTablets[val.alias]; !ok || (tw.tabletFilter != nil && !tw.tabletFilter.IsIncluded(next.tablet)) {
 			tw.healthcheck.RemoveTablet(val.tablet)
 			topologyWatcherOperations.Add(topologyWatcherOpRemoveTablet, 1)
 		}

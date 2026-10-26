@@ -693,6 +693,62 @@ func TestNewFilterByTabletTags(t *testing.T) {
 	}))
 }
 
+func TestTopologyWatcherTagChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		before, after         string
+		wantBefore, wantAfter int
+		operation             string
+	}{
+		{"enters_filter", "red", "blue", 0, 1, topologyWatcherOpAddTablet},
+		{"leaves_filter", "blue", "red", 1, 0, topologyWatcherOpRemoveTablet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := memorytopo.NewServer(t.Context(), "aa")
+			t.Cleanup(ts.Close)
+			hc := NewFakeHealthCheck(nil)
+			t.Cleanup(func() { require.NoError(t, hc.Close()) })
+			filter := NewFilterByTabletTags(map[string]string{"pool": "blue"})
+			tw := NewTopologyWatcher(t.Context(), ts, hc, filter, "aa", time.Minute, true)
+			t.Cleanup(tw.Stop)
+			tablet := &topodatapb.Tablet{
+				Alias:    &topodatapb.TabletAlias{Cell: "aa", Uid: 1},
+				Hostname: "host1",
+				PortMap:  map[string]int32{"grpc": 1234},
+				Keyspace: "keyspace",
+				Shard:    "0",
+				Tags:     map[string]string{"pool": tc.before},
+			}
+			require.NoError(t, ts.CreateTablet(t.Context(), tablet))
+			tw.loadTablets()
+			require.Len(t, hc.GetAllTablets(), tc.wantBefore)
+
+			// Only the tag changes; the tablet's alias and address stay the same.
+			_, err := ts.UpdateTabletFields(t.Context(), tablet.Alias, func(updated *topodatapb.Tablet) error {
+				updated.Tags["pool"] = tc.after
+				return nil
+			})
+			require.NoError(t, err)
+			counts := topologyWatcherOperations.Counts()
+			tw.loadTablets()
+			assert.Len(t, hc.GetAllTablets(), tc.wantAfter)
+			assert.Equal(t, counts[tc.operation]+1, topologyWatcherOperations.Counts()[tc.operation])
+			assert.Equal(t, counts[topologyWatcherOpReplaceTablet], topologyWatcherOperations.Counts()[topologyWatcherOpReplaceTablet])
+
+			// Keep excluded records cached, and avoid repeating the membership change.
+			assert.Len(t, tw.tablets, 1)
+			counts = topologyWatcherOperations.Counts()
+			tw.loadTablets()
+			checkOpCounts(t, counts, map[string]int64{topologyWatcherOpListTablets: 1})
+			assert.Len(t, hc.GetAllTablets(), tc.wantAfter)
+
+			require.NoError(t, ts.DeleteTablet(t.Context(), tablet.Alias))
+			tw.loadTablets()
+			assert.Empty(t, hc.GetAllTablets())
+		})
+	}
+}
+
 func TestGetTabletErrorDoesNotRemoveFromHealthcheck(t *testing.T) {
 	ctx := utils.LeakCheckContext(t)
 
